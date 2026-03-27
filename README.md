@@ -9,6 +9,8 @@ This package ships the `scancvi` module as an installable distribution for graph
 ## Requirements
 
 - Python 3.10 to 3.13
+- Runtime dependency: `scvi-tools>=1.3.2,<2`
+- Optional requirement for graph construction in `construct_batch_adjacency_matrices()`: `scanpy>=1.10`
 
 ## Installation
 
@@ -18,7 +20,9 @@ Install from the project directory with `pip`:
 pip install .
 ```
 
-If you need graph construction utilities that call `scanpy`, install the optional extra:
+This installs `scvi-tools` automatically as a package dependency.
+
+If you want to use `construct_batch_adjacency_matrices()` to generate within-batch neighboring cell pairs for each batch, install the optional `scanpy` dependency:
 
 ```bash
 pip install '.[scanpy]'
