@@ -43,6 +43,78 @@ from scancvi import SCANCVI, construct_batch_adjacency_matrices
 
 The public API is exported from `src/scancvi/__init__.py`.
 
+## Examples
+
+### Train a Reference SCANCVI Model
+
+This workflow starts from a pretrained `scvi.model.SCVI` reference model, constructs within-batch neighbor graphs, initializes `SCANCVI` from the SCVI weights, and learns a graph-regularized latent space.
+
+`graph_laplacian_weight` controls the strength of the graph regularization term during training: larger values enforce stronger agreement between the latent positions of graph-linked cells, while `0` disables that penalty.
+
+```python
+import scvi
+import scancvi
+
+adjmat_batches = scancvi.construct_batch_adjacency_matrices(
+	adata=adata,
+	batch_key="batch",
+	recompute_hvg_pca=True,
+	layer_hvg="counts",
+	hvg_flavor="seurat_v3",
+	n_hvg=3000,
+	use_diffmap=True,
+	show_progress=True,
+)
+
+vae = scvi.model.SCVI.load(dir_path="scvi_model", adata=adata)
+
+lvae = scancvi.SCANCVI.from_scvi_model(
+	adata=adata,
+	graph_adj_matrices=adjmat_batches,
+	labels_key="celltype",
+	unlabeled_category="Unknown",
+	scvi_model=vae,
+)
+
+lvae.train(
+	max_epochs=20,
+	batch_size=2048,
+	n_samples_per_label=500,
+	early_stopping=True,
+	graph_laplacian_weight=10,
+)
+
+lvae.save(dir_path="scancvi_model", overwrite=True)
+adata.obsm["X_scancvi"] = lvae.get_latent_representation(adata, give_mean=True)
+```
+
+### Project Query Data
+
+This workflow loads a trained reference SCANCVI model, maps query cells with `load_query_data()`, and extracts the query latent representation.
+
+```python
+import scancvi
+
+vae = scancvi.SCANCVI.load(dir_path="scancvi_model", adata=adata)
+
+vae_q = scancvi.SCANCVI.load_query_data(
+	adata=adata_query,
+	reference_model=vae,
+)
+
+vae_q.train(
+	max_epochs=100,
+	plan_kwargs={"weight_decay": 0.0},
+	check_val_every_n_epoch=10,
+)
+
+vae_q.save(dir_path="scancvi_model_scarches", overwrite=True)
+adata_query.obsm["X_scancvi"] = vae_q.get_latent_representation(
+	adata_query,
+	give_mean=True,
+)
+```
+
 ## Notes
 
 - The package is standalone in distribution terms, not in algorithmic dependency terms.
