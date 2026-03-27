@@ -1,0 +1,63 @@
+[build-system]
+build-backend = "hatchling.build"
+requires = ["hatchling>=1.24"]
+
+[project]
+name = "scancvi"
+version = "0.1.0"
+description = "Standalone SCANCVI package built on top of scvi-tools."
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+authors = [
+    { name = "hezhi" },
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: Other/Proprietary License",
+    "Operating System :: MacOS :: MacOS X",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+    "anndata>=0.11",
+    "matplotlib",
+    "numpy",
+    "scipy",
+    "scvi-tools>=1.3.2,<2",
+    "torch",
+    "torchmetrics>=0.11.0",
+]
+
+[project.optional-dependencies]
+scanpy = [
+    "scanpy>=1.10",
+]
+tests = [
+    "pytest>=8.0",
+    "scanpy>=1.10",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/scancvi"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/README.md",
+    "/pyproject.toml",
+    "/src/scancvi",
+]
+
+[tool.uv]
+package = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
