@@ -1,15 +1,18 @@
+import inspect
 import logging
 import warnings
 from copy import deepcopy
 from typing import Literal, TYPE_CHECKING
 
 import numpy as np
+import pandas as pd
 import scipy.sparse as sp_sparse
 import torch
 from anndata import AnnData
 from torch.utils.data import DataLoader
 from itertools import cycle
 
+import scvi
 from scvi import REGISTRY_KEYS, settings
 from scvi.data import AnnDataManager
 from scvi.data._constants import _SETUP_ARGS_KEY, ADATA_MINIFY_TYPE
@@ -25,6 +28,9 @@ from ._module import SCANCVAE
 from ._task import ScancTrainingPlan
 
 logger = logging.getLogger(__name__)
+
+# obs column created by SCANCVI.setup_anndata when no labels_key is given.
+_UNLABELED_COLUMN = "_scancvi_labels"
 
 if TYPE_CHECKING:
     from scvi.model._scvi import SCVI
@@ -225,6 +231,7 @@ class SCANCVI(ArchesMixin, BaseModelClass, VAEMixin):
         freeze_batchnorm_encoder: bool = True,
         freeze_batchnorm_decoder: bool = False,
         freeze_classifier: bool = True,
+        transfer_batch: bool = True,
         datamodule=None,
         graph_adj_matrices: (
             list[np.ndarray | torch.Tensor]
@@ -240,6 +247,10 @@ class SCANCVI(ArchesMixin, BaseModelClass, VAEMixin):
 
         Parameters
         ----------
+        transfer_batch
+            Passed to :meth:`~scvi.model.base.ArchesMixin.load_query_data`. Setting it to
+            ``False`` requires scvi-tools >= 1.4; the default (``True``) works with all
+            supported versions.
         graph_adj_matrices
             Optional weighted adjacency matrices for the query data. If provided, they are
             attached to the returned SCANCVI model via :meth:`set_graph_laplacian`.
@@ -247,6 +258,15 @@ class SCANCVI(ArchesMixin, BaseModelClass, VAEMixin):
             Optional default graph Laplacian loss weight to store on the returned model for
             subsequent :meth:`train` calls.
         """
+        extra_kwargs = {}
+        if not transfer_batch:
+            if "transfer_batch" not in inspect.signature(ArchesMixin.load_query_data).parameters:
+                raise ValueError(
+                    "`transfer_batch=False` requires scvi-tools >= 1.4 "
+                    f"(installed: {scvi.__version__})."
+                )
+            extra_kwargs["transfer_batch"] = transfer_batch
+
         model = super().load_query_data(
             adata=adata,
             reference_model=reference_model,
@@ -262,6 +282,7 @@ class SCANCVI(ArchesMixin, BaseModelClass, VAEMixin):
             freeze_batchnorm_decoder=freeze_batchnorm_decoder,
             freeze_classifier=freeze_classifier,
             datamodule=datamodule,
+            **extra_kwargs,
         )
 
         if graph_adj_matrices is not None:
@@ -344,6 +365,8 @@ class SCANCVI(ArchesMixin, BaseModelClass, VAEMixin):
                 compatible_weights[key] = value
 
         scvi_model.module.load_state_dict(compatible_weights, strict=False)
+        # Match the inference behavior of a trained model (batch norm uses running stats).
+        scvi_model.module.eval()
         scvi_model.is_trained_ = True
         scvi_model.trainer = self.trainer
 
@@ -390,6 +413,11 @@ class SCANCVI(ArchesMixin, BaseModelClass, VAEMixin):
             REGISTRY_KEYS.LABELS_KEY
         ).unlabeled_category
         labels_key = self.adata_manager.registry[_SETUP_ARGS_KEY].get("labels_key")
+        if labels_key is None or self.summary_stats.n_labels < 2:
+            raise ValueError(
+                "Cannot convert to SCANVI: the model has no labeled categories "
+                "(SCANVI needs at least one label besides the unlabeled category)."
+            )
 
         # Extract parameters that are compatible with SCANVI
         scanvi_init_params = {
@@ -417,7 +445,9 @@ class SCANCVI(ArchesMixin, BaseModelClass, VAEMixin):
         )
 
         # Create the SCANVI model
-        scanvi_model = SCANVI(self.adata, unlabeled_category=unlabeled_category, **scanvi_init_params)
+        # The unlabeled category is recorded by ``setup_anndata`` above; SCANVI.__init__ would
+        # forward an ``unlabeled_category`` kwarg to the module, which rejects it.
+        scanvi_model = SCANVI(self.adata, **scanvi_init_params)
 
         # Load compatible weights from SCANCVI module into SCANVI module
         # Both SCANCVI and SCANVI use semi-supervised VAE, so their core weights are compatible
@@ -435,6 +465,8 @@ class SCANCVI(ArchesMixin, BaseModelClass, VAEMixin):
                 compatible_weights[key] = value
 
         scanvi_model.module.load_state_dict(compatible_weights, strict=False)
+        # Match the inference behavior of a trained model (batch norm uses running stats).
+        scanvi_model.module.eval()
         scanvi_model.is_trained_ = True
         scanvi_model.trainer = self.trainer
 
@@ -474,14 +506,17 @@ class SCANCVI(ArchesMixin, BaseModelClass, VAEMixin):
         """
         setup_method_args = cls._get_setup_method_args(**locals())
         adata.obs["_indices"] = np.arange(adata.n_obs)
+        # Always register labels with an unlabeled category, since training uses
+        # SemiSupervisedDataSplitter, which requires it. Without a labels_key, every cell is
+        # treated as unlabeled via a generated column (re-created whenever setup is replayed).
         if labels_key is None:
-            label_field = CategoricalObsField(REGISTRY_KEYS.LABELS_KEY, labels_key)
-        else:
-            label_field = LabelsWithUnlabeledObsField(
-                REGISTRY_KEYS.LABELS_KEY,
-                labels_key,
-                unlabeled_category,
-            )
+            labels_key = _UNLABELED_COLUMN
+            adata.obs[labels_key] = pd.Categorical([unlabeled_category] * adata.n_obs)
+        label_field = LabelsWithUnlabeledObsField(
+            REGISTRY_KEYS.LABELS_KEY,
+            labels_key,
+            unlabeled_category,
+        )
         anndata_fields = [
             LayerField(REGISTRY_KEYS.X_KEY, layer, is_count_data=True),
             CategoricalObsField(REGISTRY_KEYS.BATCH_KEY, batch_key),
@@ -517,7 +552,7 @@ class SCANCVI(ArchesMixin, BaseModelClass, VAEMixin):
         early_stopping: bool = False,
         datasplitter_kwargs: dict | None = None,
         plan_kwargs: dict | None = None,
-        graph_laplacian_weight: float = 0.0,
+        graph_laplacian_weight: float | None = None,
         cache_graph_laplacian: bool = False,
         **trainer_kwargs,
     ) -> None:
@@ -546,7 +581,9 @@ class SCANCVI(ArchesMixin, BaseModelClass, VAEMixin):
         plan_kwargs
             Keyword arguments for training plan.
         graph_laplacian_weight
-            Weight for the graph Laplacian regularization term. Set to 0 to disable.
+            Weight for the graph Laplacian regularization term. Set to 0 to disable. If
+            ``None``, uses the weight stored by :meth:`from_scvi_model` or
+            :meth:`load_query_data` (``graph_laplacian_weight=...``), or 0 if none was stored.
         cache_graph_laplacian
             If True, moves adjacency edge lists to the training device at fit start.
         trainer_kwargs
@@ -590,11 +627,10 @@ class SCANCVI(ArchesMixin, BaseModelClass, VAEMixin):
         plan_kwargs = plan_kwargs or {}
         datasplitter_kwargs = datasplitter_kwargs or {}
         plan_kwargs.setdefault("n_classes", self.summary_stats.n_labels)
-        if graph_laplacian_weight is not None:
-            plan_kwargs.setdefault("graph_laplacian_weight", graph_laplacian_weight)
+        if graph_laplacian_weight is None:
+            graph_laplacian_weight = getattr(self, "_graph_laplacian_weight", 0.0)
+        plan_kwargs.setdefault("graph_laplacian_weight", graph_laplacian_weight)
         plan_kwargs.setdefault("cache_graph_laplacian", cache_graph_laplacian)
-        if hasattr(self, "_graph_laplacian_weight"):
-            plan_kwargs.setdefault("graph_laplacian_weight", self._graph_laplacian_weight)
 
         data_splitter = SemiSupervisedDataSplitter(
             self.adata_manager,
@@ -629,6 +665,23 @@ class SCANCVI(ArchesMixin, BaseModelClass, VAEMixin):
             **trainer_kwargs,
         )
         return runner()
+
+    def _validate_anndata(self, adata: AnnData | None = None, copy_if_view: bool = True):
+        """Add SCANCVI's generated obs columns to a new AnnData before transferring setup.
+
+        ``setup_anndata`` creates ``_indices`` (and, without ``labels_key``, an all-unlabeled
+        label column). scvi-tools transfers the setup to a new AnnData without re-running
+        ``setup_anndata``, so these columns must exist beforehand.
+        """
+        if adata is not None and self.get_anndata_manager(adata) is None:
+            setup_args = self.registry_[_SETUP_ARGS_KEY]
+            if "_indices" not in adata.obs:
+                adata.obs["_indices"] = np.arange(adata.n_obs)
+            if setup_args.get("labels_key") is None and _UNLABELED_COLUMN not in adata.obs:
+                adata.obs[_UNLABELED_COLUMN] = pd.Categorical(
+                    [setup_args.get("unlabeled_category", "unknown")] * adata.n_obs
+                )
+        return super()._validate_anndata(adata, copy_if_view=copy_if_view)
 
     def set_graph_laplacian(
         self,
@@ -685,6 +738,7 @@ class SCANCVI(ArchesMixin, BaseModelClass, VAEMixin):
             self.adata_manager.get_from_registry(REGISTRY_KEYS.BATCH_KEY).astype(int).ravel()
         )
         index_maps: list[np.ndarray] = []
+        adj_matrices: list[np.ndarray | torch.Tensor | sp_sparse.spmatrix] = []
 
         for b in range(n_batch):
             batch_cells = np.where(batch_indices == b)[0]
@@ -693,6 +747,7 @@ class SCANCVI(ArchesMixin, BaseModelClass, VAEMixin):
                 adj = sp_sparse.csr_matrix(
                     (batch_cells.shape[0], batch_cells.shape[0]), dtype=float
                 )
+            adj_matrices.append(adj)
             if adj.shape[0] != adj.shape[1]:
                 raise ValueError(f"Adjacency matrix for batch {b} must be square.")
             if adj.shape[0] != batch_cells.shape[0]:
@@ -704,7 +759,7 @@ class SCANCVI(ArchesMixin, BaseModelClass, VAEMixin):
             index_map[batch_cells] = np.arange(batch_cells.shape[0])
             index_maps.append(index_map)
 
-        self.module.set_graph_laplacian(graph_adj_matrices, index_maps)
+        self.module.set_graph_laplacian(adj_matrices, index_maps)
 
     @torch.no_grad()
     def get_latent_representation(
@@ -820,13 +875,15 @@ class SCANCVI(ArchesMixin, BaseModelClass, VAEMixin):
         dataloader = self._make_data_loader(adata=adata, indices=indices, batch_size=batch_size)
         exprs = []
         for tensors in dataloader:
-            generative_inputs = self.module._get_generative_input(tensors)
+            inference_inputs = self.module._get_inference_input(tensors)
+            inference_outputs = self.module.inference(**inference_inputs)
+            generative_inputs = self.module._get_generative_input(tensors, inference_outputs)
             outputs = self.module.generative(**generative_inputs)
-            if return_mean:
-                expr = outputs["px_scale"].cpu().numpy()
-            else:
-                expr = outputs["px_rate"].cpu().numpy()
-            exprs.append(expr)
+            px = outputs["px"]
+            # px.scale: normalized expression (sums to 1 per cell);
+            # px.mu: expected counts (scale multiplied by library size).
+            expr = px.scale if return_mean else px.mu
+            exprs.append(expr.cpu().numpy())
         return np.concatenate(exprs, axis=0)
 
 

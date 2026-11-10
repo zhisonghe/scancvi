@@ -9,8 +9,22 @@ This package ships the `scancvi` module as an installable distribution for graph
 ## Requirements
 
 - Python 3.10 to 3.13
-- Runtime dependency: `scvi-tools>=1.3.2,<2`
+- Runtime dependency: `scvi-tools>=1.3.2,<1.6`
 - Optional requirement for graph construction in `construct_batch_adjacency_matrices()`: `scanpy>=1.10`
+
+### Python version and scvi-tools version
+
+scvi-tools 1.4 and later require Python 3.12 or newer. SCANCVI itself still supports Python 3.10 and 3.11, but on those versions the installer can only pick scvi-tools 1.3.x (1.3.2 or newer). To use the newest scvi-tools, use Python 3.12 or 3.13.
+
+The upper bound (`<1.6`) is deliberate: SCANCVI builds on internal scvi-tools APIs that can change between minor releases. The bound is raised once a new scvi-tools release has been tested.
+
+### Pinned version in `uv.lock`
+
+`uv.lock` pins `scvi-tools==1.3.2`, the oldest supported release, because it installs on every supported Python version. A `uv sync` environment therefore uses scvi-tools 1.3.2, while `pip install .` picks the newest release allowed by `pyproject.toml` for your Python version. To use a newer scvi-tools in a uv-managed environment:
+
+```bash
+uv pip install -U 'scvi-tools>=1.3.2,<1.6'
+```
 
 ## Installation
 
@@ -118,9 +132,11 @@ adata_query.obsm["X_scancvi"] = vae_q.get_latent_representation(
 ## Notes
 
 - The package is standalone in distribution terms, not in algorithmic dependency terms.
-- Runtime validation passed on Python 3.10 and Python 3.13.
-- Runtime validation passed with `scvi-tools==1.3.2`.
+- The test suite passes with `scvi-tools==1.3.2` on Python 3.10 and with `scvi-tools==1.5.2` on Python 3.12 and 3.13. The workflows were also checked with `scvi-tools==1.4.3` on Python 3.12.
 - Runtime validation failed with older `scvi-tools` releases tested (`1.2.0`, `1.2.1`, `1.2.2.post2`, `1.3.0`, and `1.3.1`) due to missing or newly eager dependencies and missing internal APIs.
+- A `graph_laplacian_weight` passed to `from_scvi_model()` or `load_query_data()` is used by later `train()` calls unless `train()` is given its own `graph_laplacian_weight`.
+- `load_query_data(transfer_batch=False)` requires scvi-tools 1.4 or newer; the default (`True`) works with all supported versions.
+- SCANCVI counts the unlabeled category as a class, while SCANVI does not. As a result, `to_scanvi_model()` copies only the shared VAE weights (encoder and decoder); the SCANVI classifier and label-conditioned layers keep their initial values. `to_scanvi_model()` also requires at least one labeled category.
 
 ## Developer Notes
 
@@ -130,3 +146,11 @@ If you use `uv` for environment management, the equivalent editable install comm
 uv pip install -e .
 uv pip install -e '.[tests]'
 ```
+
+Run the tests with:
+
+```bash
+python -m pytest
+```
+
+GitHub Actions (`.github/workflows/tests.yml`) runs the tests with `scvi-tools==1.3.2` on Python 3.10 and with the newest allowed scvi-tools on Python 3.12 and 3.13.
