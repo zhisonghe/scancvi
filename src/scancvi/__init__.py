@@ -3,7 +3,7 @@ from ._module import SCANCVAE
 from ._task import ScancTrainingPlan
 from ._utils import construct_batch_adjacency_matrices, load_saved_scancvi_files
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "SCANCVI",

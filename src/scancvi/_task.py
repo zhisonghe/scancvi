@@ -108,6 +108,10 @@ class ScancTrainingPlan(TrainingPlan):
         true_labels = loss_output.true_labels.squeeze(-1)
         logits = loss_output.logits
         predicted_labels = torch.argmax(logits, dim=-1)
+        # scvi-tools >= 1.4 exposes `on_step`/`on_epoch` plan options; fall back to the
+        # previous (and upstream default) epoch-level logging on older versions.
+        on_step = getattr(self, "on_step", False)
+        on_epoch = getattr(self, "on_epoch", True)
 
         accuracy = tmf.classification.multiclass_accuracy(
             predicted_labels,
@@ -131,32 +135,32 @@ class ScancTrainingPlan(TrainingPlan):
             METRIC_KEYS.CLASSIFICATION_LOSS_KEY,
             classification_loss,
             mode,
-            on_step=False,
-            on_epoch=True,
+            on_step=on_step,
+            on_epoch=on_epoch,
             batch_size=loss_output.n_obs_minibatch,
         )
         self.log_with_mode(
             METRIC_KEYS.ACCURACY_KEY,
             accuracy,
             mode,
-            on_step=False,
-            on_epoch=True,
+            on_step=on_step,
+            on_epoch=on_epoch,
             batch_size=loss_output.n_obs_minibatch,
         )
         self.log_with_mode(
             METRIC_KEYS.F1_SCORE_KEY,
             f1,
             mode,
-            on_step=False,
-            on_epoch=True,
+            on_step=on_step,
+            on_epoch=on_epoch,
             batch_size=loss_output.n_obs_minibatch,
         )
         self.log_with_mode(
             METRIC_KEYS.CALIBRATION_ERROR_KEY,
             ce,
             mode,
-            on_step=False,
-            on_epoch=True,
+            on_step=on_step,
+            on_epoch=on_epoch,
             batch_size=loss_output.n_obs_minibatch,
         )
 
